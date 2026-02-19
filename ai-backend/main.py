@@ -7,9 +7,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from pydantic import BaseModel
 import firebase_admin
 from firebase_admin import credentials, db, initialize_app
 import insightface
@@ -249,9 +250,9 @@ def extract_embedding(image: np.ndarray) -> List[float]:
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     """
-    Compute cosine similarity between two vectors.
+    Compute cosine similarity between two pre-normalized vectors.
     
-    Formula: cos(theta) = (a · b) / (||a|| * ||b||)
+    For normalized vectors, cosine similarity equals dot product.
     
     Args:
         a: First vector
@@ -260,13 +261,62 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     Returns:
         float: Cosine similarity in range [-1, 1], typically [0, 1] for embeddings
     """
-    norm_a = np.linalg.norm(a)
-    norm_b = np.linalg.norm(b)
-    
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    
-    return float(np.dot(a, b) / (norm_a * norm_b))
+    return float(np.dot(a, b))
+
+
+def safe_numpy_embedding(raw_embedding: Any, label: str) -> np.ndarray:
+    """
+    Convert incoming embedding data to a validated float32 numpy vector.
+
+    Args:
+        raw_embedding: Raw embedding data (typically a list)
+        label: Context label used in error/debug messages
+
+    Returns:
+        np.ndarray: 1D float32 vector of length EMBEDDING_DIM
+
+    Raises:
+        ValueError: If conversion/shape/content is invalid
+    """
+    if not isinstance(raw_embedding, list):
+        raise ValueError(f"{label} must be a list of {EMBEDDING_DIM} numeric values")
+
+    try:
+        vector = np.asarray(raw_embedding, dtype=np.float32)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{label} contains non-numeric values") from e
+
+    if vector.ndim != 1 or vector.shape[0] != EMBEDDING_DIM:
+        raise ValueError(f"{label} must have exactly {EMBEDDING_DIM} values")
+
+    if not np.all(np.isfinite(vector)):
+        raise ValueError(f"{label} contains NaN or infinite values")
+
+    return vector
+
+
+def normalize_embedding(vector: np.ndarray, label: str) -> np.ndarray:
+    """
+    Normalize embedding to unit length exactly once.
+
+    Args:
+        vector: Input embedding vector
+        label: Context label used in error/debug messages
+
+    Returns:
+        np.ndarray: L2-normalized vector
+
+    Raises:
+        ValueError: If vector norm is zero
+    """
+    norm = np.linalg.norm(vector)
+    if norm == 0:
+        raise ValueError(f"{label} has zero norm and cannot be normalized")
+    return vector / norm
+
+
+class MatchFaceRequest(BaseModel):
+    embedding: List[float]
 
 
 # ==================== API ENDPOINTS ====================
@@ -347,8 +397,17 @@ async def generate_embedding(file: UploadFile = File(...)) -> Dict[str, Any]:
         
         image = decode_image(contents)
         
-        # Extract embedding
-        embedding = extract_embedding(image)
+        # Extract embedding from largest detected face
+        raw_embedding = extract_embedding(image)
+
+        # Safe conversion and strict validation (float32, 512D)
+        embedding_vector = safe_numpy_embedding(raw_embedding, "Generated embedding")
+
+        # Normalize exactly once
+        embedding_vector = normalize_embedding(embedding_vector, "Generated embedding")
+
+        # Return clean float list (not string), fixed to EMBEDDING_DIM
+        embedding = embedding_vector.astype(np.float32).tolist()
         
         return {
             "embedding": embedding,
@@ -367,14 +426,18 @@ async def generate_embedding(file: UploadFile = File(...)) -> Dict[str, Any]:
 
 @app.post("/match-face")
 async def match_face(
-    file: UploadFile = File(...),
+    payload: MatchFaceRequest | None = Body(default=None),
+    file: UploadFile | None = File(default=None),
     threshold: float = SIMILARITY_THRESHOLD
 ) -> Dict[str, Any]:
     """
-    Match uploaded face against database of stored embeddings.
-    
-    Generates embedding from uploaded image, queries Firebase embeddings
-    database, and returns matches above the similarity threshold (default 0.55).
+    Match face embedding against database of stored embeddings.
+
+    Accepts either:
+    1) JSON body: {"embedding": [...]}  (preferred)
+    2) Multipart file upload with `file` (backward compatible)
+
+    Queries Firebase `missing_persons` and returns matches above threshold.
     
     Similarity score interpretation:
     - 0.55-0.65: Possible match (needs verification)
@@ -382,7 +445,8 @@ async def match_face(
     - 0.75+: Very strong match (almost certainly same person)
     
     Args:
-        file: Image file upload containing a face
+        payload: JSON payload with 512-d embedding
+        file: Optional image file upload containing a face
         threshold: Similarity threshold for matches (default 0.55, range 0.0-1.0)
         
     Returns:
@@ -415,23 +479,36 @@ async def match_face(
                 detail="Threshold must be a number between 0.0 and 1.0"
             )
         
-        # Read and decode image
-        contents = await file.read()
-        if not contents:
+        # Build query embedding from JSON payload (preferred) or fallback image file
+        if payload is not None and payload.embedding is not None:
+            query_embedding_raw = payload.embedding
+        elif file is not None:
+            contents = await file.read()
+            if not contents:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Empty file uploaded"
+                )
+
+            image = decode_image(contents)
+            query_embedding_raw = extract_embedding(image)
+        else:
             raise HTTPException(
                 status_code=400,
-                detail="Empty file uploaded"
+                detail="Provide either JSON embedding or image file"
             )
-        
-        image = decode_image(contents)
-        
-        # Extract embedding from query image
-        query_embedding_list = extract_embedding(image)
-        query_embedding = np.array(query_embedding_list, dtype=np.float32)
-        
-        # Query Firebase embeddings database
+
         try:
-            ref = db.reference("embeddings")
+            query_embedding = safe_numpy_embedding(query_embedding_raw, "Query embedding")
+            query_embedding = normalize_embedding(query_embedding, "Query embedding")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        print(f"[Match] Query embedding length: {len(query_embedding)}")
+
+        # Query Firebase missing person records
+        try:
+            ref = db.reference("missing_persons")
             data = ref.get() or {}
         except Exception as e:
             raise HTTPException(
@@ -441,50 +518,48 @@ async def match_face(
         
         matches: List[Dict[str, Any]] = []
         
-        for person_id, embedding_data in data.items():
-            # Handle both direct embedding list and nested structure
-            if isinstance(embedding_data, dict):
-                stored_list = embedding_data.get("embedding")
-            else:
-                stored_list = embedding_data
-            
-            # Validate stored embedding
-            if not isinstance(stored_list, list) or len(stored_list) != EMBEDDING_DIM:
+        for person_id, person_data in data.items():
+            if not isinstance(person_data, dict):
+                print(f"[Match] Skipping {person_id}: invalid record format")
                 continue
-            
-            # Compute similarity
+
+            stored_raw = person_data.get("embedding")
+            stored_length = len(stored_raw) if isinstance(stored_raw, list) else -1
+            print(f"[Match] Record {person_id} stored embedding length: {stored_length}")
+
             try:
-                stored_embedding = np.array(stored_list, dtype=np.float32)
+                stored_embedding = safe_numpy_embedding(stored_raw, f"Stored embedding ({person_id})")
+                stored_embedding = normalize_embedding(stored_embedding, f"Stored embedding ({person_id})")
                 similarity = cosine_similarity(query_embedding, stored_embedding)
-            except Exception:
-                continue  # Skip invalid embeddings
+                print(f"[Match] Record {person_id} similarity: {similarity:.6f}")
+            except Exception as e:
+                print(f"[Match] Skipping {person_id}: {e}")
+                continue
             
             # Add match if above threshold
             if similarity >= threshold:
                 match_entry: Dict[str, Any] = {
                     "person_id": person_id,
                     "similarity": round(float(similarity), 4),
+                    "name": person_data.get("name"),
+                    "age": person_data.get("age"),
+                    "description": person_data.get("description"),
+                    "imageUrl": person_data.get("imageUrl"),
                 }
-                
-                # Add optional fields from database
-                if isinstance(embedding_data, dict):
-                    if "name" in embedding_data:
-                        match_entry["name"] = embedding_data["name"]
-                    if "age" in embedding_data:
-                        match_entry["age"] = embedding_data["age"]
-                    if "description" in embedding_data:
-                        match_entry["description"] = embedding_data["description"]
-                
+
                 matches.append(match_entry)
         
         # Sort by similarity descending
         matches.sort(key=lambda x: x["similarity"], reverse=True)
+
+        # Return top 5 matches only
+        top_matches = matches[:5]
         
         return {
             "status": "success",
-            "matches_found": len(matches),
+            "matches_found": len(top_matches),
             "threshold": threshold,
-            "matches": matches
+            "matches": top_matches
         }
         
     except HTTPException:
