@@ -54,6 +54,8 @@ ai-backend/firebase-service-account.json
 
 # Environment
 .env
+.env.local
+.env.example
 
 # OS
 .DS_Store
