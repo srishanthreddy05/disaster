@@ -1,12 +1,38 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { GoogleMap, useLoadScript, Marker } from '@react-google-maps/api';
-import { MapPin, Loader2, AlertCircle } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { GoogleMap, useJsApiLoader } from '@react-google-maps/api';
+import { AlertCircle, Loader2, MapPin, X } from 'lucide-react';
+import { off, onValue, ref } from 'firebase/database';
+import { database } from '@/lib/firebase';
 
 interface UserLocation {
   lat: number;
   lng: number;
+}
+
+type ZoneType = 'red' | 'orange' | 'green';
+type PointType = 'shelter' | 'safe_location' | 'medical' | 'resource';
+type AlertSeverity = 'low' | 'medium' | 'high';
+
+interface ZoneItem {
+  type: ZoneType;
+  coordinates: Array<{ lat: number; lng: number }>;
+}
+
+interface MapPointItem {
+  name: string;
+  type: PointType;
+  lat: number;
+  lng: number;
+}
+
+interface AlertItem {
+  id: string;
+  title: string;
+  message: string;
+  severity: AlertSeverity;
+  createdAt: number;
 }
 
 const mapContainerStyle = {
@@ -20,18 +46,187 @@ const defaultCenter = {
   lng: 80.2707,
 };
 
+const polygonColors: Record<ZoneType, string> = {
+  red: '#ff0000',
+  orange: '#ffa500',
+  green: '#00ff00',
+};
+
+const pointIconUrl: Record<PointType, string> = {
+  shelter: 'https://maps.google.com/mapfiles/ms/icons/blue-dot.png',
+  safe_location: 'https://maps.google.com/mapfiles/ms/icons/green-dot.png',
+  medical: 'https://maps.google.com/mapfiles/ms/icons/red-dot.png',
+  resource: 'https://maps.google.com/mapfiles/ms/icons/orange-dot.png',
+};
+
+const severityColors: Record<AlertSeverity, string> = {
+  high: 'bg-red-600',
+  medium: 'bg-orange-500',
+  low: 'bg-yellow-500',
+};
+
 export function UserLocationMap() {
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [permissionStatus, setPermissionStatus] = useState<'prompt' | 'granted' | 'denied'>('prompt');
+  const [latestAlert, setLatestAlert] = useState<AlertItem | null>(null);
+  const [alertClosed, setAlertClosed] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
+
+  const mapRef = useRef<google.maps.Map | null>(null);
+  const polygonsRef = useRef<google.maps.Polygon[]>([]);
+  const markersRef = useRef<google.maps.Marker[]>([]);
+  const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
 
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || '';
+  const libraries: NonNullable<Parameters<typeof useJsApiLoader>[0]['libraries']> = useMemo(
+    () => ['drawing', 'geometry'],
+    []
+  );
 
   // Load Google Maps API using hook
-  const { isLoaded, loadError } = useLoadScript({
-    googleMapsApiKey: googleMapsApiKey,
+  const { isLoaded, loadError } = useJsApiLoader({
+    id: 'google-maps-script',
+    googleMapsApiKey,
+    libraries,
   });
+
+  const clearPolygons = useCallback(() => {
+    polygonsRef.current.forEach((polygon) => {
+      google.maps.event.clearInstanceListeners(polygon);
+      polygon.setMap(null);
+    });
+    polygonsRef.current = [];
+  }, []);
+
+  const clearMarkers = useCallback(() => {
+    markersRef.current.forEach((marker) => {
+      google.maps.event.clearInstanceListeners(marker);
+      marker.setMap(null);
+    });
+    markersRef.current = [];
+  }, []);
+
+  const renderZones = useCallback(
+    (zonesData: Record<string, ZoneItem> | null) => {
+      if (!mapRef.current) {
+        return;
+      }
+
+      clearPolygons();
+
+      if (!zonesData) {
+        return;
+      }
+
+      Object.values(zonesData).forEach((zone) => {
+        if (!zone?.type || !Array.isArray(zone.coordinates) || zone.coordinates.length < 3) {
+          return;
+        }
+
+        const validPath = zone.coordinates.filter(
+          (point) => typeof point?.lat === 'number' && typeof point?.lng === 'number'
+        );
+
+        if (validPath.length < 3) {
+          return;
+        }
+
+        const fillColor = polygonColors[zone.type] || polygonColors.red;
+
+        const polygon = new google.maps.Polygon({
+          paths: validPath,
+          fillColor,
+          fillOpacity: 0.35,
+          strokeColor: fillColor,
+          strokeWeight: 2,
+          map: mapRef.current,
+        });
+
+        polygonsRef.current.push(polygon);
+      });
+    },
+    [clearPolygons]
+  );
+
+  const renderMapPoints = useCallback(
+    (pointsData: Record<string, MapPointItem> | null) => {
+      if (!mapRef.current) {
+        return;
+      }
+
+      clearMarkers();
+
+      if (!pointsData) {
+        return;
+      }
+
+      if (!infoWindowRef.current) {
+        infoWindowRef.current = new google.maps.InfoWindow();
+      }
+
+      Object.values(pointsData).forEach((point) => {
+        if (
+          !point?.name ||
+          !point?.type ||
+          typeof point?.lat !== 'number' ||
+          typeof point?.lng !== 'number'
+        ) {
+          return;
+        }
+
+        const marker = new google.maps.Marker({
+          position: { lat: point.lat, lng: point.lng },
+          map: mapRef.current,
+          icon: pointIconUrl[point.type] || pointIconUrl.shelter,
+          title: point.name,
+        });
+
+        marker.addListener('click', () => {
+          infoWindowRef.current?.setContent(
+            `<div style="min-width:140px;color:#111827;"><strong>${point.name}</strong><br/><span style="text-transform:capitalize;">${point.type.replace('_', ' ')}</span></div>`
+          );
+          infoWindowRef.current?.open({
+            map: mapRef.current,
+            anchor: marker,
+          });
+        });
+
+        markersRef.current.push(marker);
+      });
+    },
+    [clearMarkers]
+  );
+
+  const resolveLatestAlert = useCallback((alertsData: Record<string, Omit<AlertItem, 'id'>> | null) => {
+    if (!alertsData) {
+      setLatestAlert(null);
+      return;
+    }
+
+    const latest = Object.entries(alertsData)
+      .map(([id, alert]) => ({
+        id,
+        title: String(alert.title || ''),
+        message: String(alert.message || ''),
+        severity: (alert.severity as AlertSeverity) || 'low',
+        createdAt: Number(alert.createdAt || 0),
+      }))
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+
+    if (!latest) {
+      setLatestAlert(null);
+      return;
+    }
+
+    setLatestAlert((previous) => {
+      if (!previous || previous.id !== latest.id || previous.createdAt !== latest.createdAt) {
+        setAlertClosed(false);
+      }
+      return latest;
+    });
+  }, []);
 
   // Request location permission
   const requestLocation = () => {
@@ -86,6 +281,57 @@ export function UserLocationMap() {
     requestLocation();
   }, []);
 
+  useEffect(() => {
+    if (!isLoaded || !mapReady || !mapRef.current) {
+      return;
+    }
+
+    const zonesRef = ref(database, 'zones');
+    const mapPointsRef = ref(database, 'mapPoints');
+    const alertsRef = ref(database, 'alerts');
+
+    const zonesListener = (snapshot: { val: () => Record<string, ZoneItem> | null }) => {
+      renderZones(snapshot.val());
+    };
+
+    const mapPointsListener = (snapshot: { val: () => Record<string, MapPointItem> | null }) => {
+      renderMapPoints(snapshot.val());
+    };
+
+    const alertsListener = (snapshot: {
+      val: () => Record<string, Omit<AlertItem, 'id'>> | null;
+    }) => {
+      resolveLatestAlert(snapshot.val());
+    };
+
+    onValue(zonesRef, zonesListener);
+    onValue(mapPointsRef, mapPointsListener);
+    onValue(alertsRef, alertsListener);
+
+    return () => {
+      off(zonesRef, 'value', zonesListener);
+      off(mapPointsRef, 'value', mapPointsListener);
+      off(alertsRef, 'value', alertsListener);
+
+      clearPolygons();
+      clearMarkers();
+      infoWindowRef.current?.close();
+    };
+  }, [clearMarkers, clearPolygons, isLoaded, mapReady, renderMapPoints, renderZones, resolveLatestAlert]);
+
+  useEffect(() => {
+    return () => {
+      clearPolygons();
+      clearMarkers();
+      infoWindowRef.current?.close();
+      mapRef.current = null;
+    };
+  }, [clearMarkers, clearPolygons]);
+
+  const showAlertBanner = Boolean(latestAlert && !alertClosed);
+
+  const bannerBackground = latestAlert ? severityColors[latestAlert.severity] || severityColors.low : severityColors.low;
+
   if (loadError) {
     return (
       <div className="bg-red-900 border border-red-700 rounded-xl p-6">
@@ -116,7 +362,32 @@ export function UserLocationMap() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 relative">
+      <div
+        className={`fixed top-0 left-0 right-0 z-40 transform transition-transform duration-300 ${
+          showAlertBanner ? 'translate-y-0' : '-translate-y-full'
+        }`}
+      >
+        {latestAlert && (
+          <div className={`${bannerBackground} text-black px-4 py-3 shadow-lg`}>
+            <div className="max-w-7xl mx-auto flex items-start justify-between gap-4">
+              <div>
+                <p className="font-bold text-sm">{latestAlert.title}</p>
+                <p className="text-sm">{latestAlert.message}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAlertClosed(true)}
+                className="p-1 rounded hover:bg-black/10"
+                aria-label="Close alert"
+              >
+                <X size={18} />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Location Status */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -159,11 +430,19 @@ export function UserLocationMap() {
 
       {/* Map */}
       {!loading && (
-        <div className="bg-white border border-gray-300 rounded-xl overflow-hidden shadow-lg">
+        <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden shadow-lg relative">
           <GoogleMap
             mapContainerStyle={mapContainerStyle}
             center={userLocation || defaultCenter}
             zoom={userLocation ? 15 : 12}
+            onLoad={(map) => {
+              mapRef.current = map;
+              setMapReady(true);
+            }}
+            onUnmount={() => {
+              setMapReady(false);
+              mapRef.current = null;
+            }}
             options={{
               disableDefaultUI: false,
               zoomControl: true,
@@ -171,40 +450,32 @@ export function UserLocationMap() {
               mapTypeControl: true,
               fullscreenControl: true,
               mapTypeId: 'roadmap',
+              styles: [
+                {
+                  elementType: 'geometry',
+                  stylers: [{ color: '#1f2937' }],
+                },
+                {
+                  elementType: 'labels.text.fill',
+                  stylers: [{ color: '#9ca3af' }],
+                },
+                {
+                  elementType: 'labels.text.stroke',
+                  stylers: [{ color: '#111827' }],
+                },
+              ],
             }}
-          >
-            {/* User Location Marker with Enhanced Styling */}
-            {userLocation && (
-              <>
-                {/* Outer pulse ring */}
-                <Marker
-                  position={userLocation}
-                  icon={{
-                    path: window.google.maps.SymbolPath.CIRCLE,
-                    scale: 20,
-                    fillColor: '#EF4444',
-                    fillOpacity: 0.15,
-                    strokeColor: '#DC2626',
-                    strokeWeight: 2,
-                    strokeOpacity: 0.4,
-                  }}
-                />
-                {/* Main marker */}
-                <Marker
-                  position={userLocation}
-                  icon={{
-                    path: window.google.maps.SymbolPath.CIRCLE,
-                    scale: 10,
-                    fillColor: '#DC2626',
-                    fillOpacity: 1,
-                    strokeColor: '#FFFFFF',
-                    strokeWeight: 3,
-                  }}
-                  title="📍 You are here"
-                />
-              </>
-            )}
-          </GoogleMap>
+          />
+
+          <div className="absolute bottom-3 right-3 bg-gray-950/90 border border-gray-700 rounded-lg p-3 text-xs text-gray-200 w-52 space-y-1">
+            <p className="font-semibold mb-1">Legend</p>
+            <p><span className="inline-block w-3 h-3 rounded-full bg-red-500 mr-2" />Red Zone → Danger</p>
+            <p><span className="inline-block w-3 h-3 rounded-full bg-orange-500 mr-2" />Orange Zone → Warning</p>
+            <p><span className="inline-block w-3 h-3 rounded-full bg-green-500 mr-2" />Green Zone → Safe</p>
+            <p><span className="inline-block w-3 h-3 rounded-full bg-blue-500 mr-2" />Blue → Shelter</p>
+            <p><span className="inline-block w-3 h-3 rounded-full bg-red-600 mr-2" />Red Marker → Medical</p>
+            <p><span className="inline-block w-3 h-3 rounded-full bg-orange-400 mr-2" />Orange Marker → Resource</p>
+          </div>
         </div>
       )}
 
