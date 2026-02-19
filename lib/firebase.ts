@@ -22,6 +22,7 @@ export const auth = getAuth(app);
 export const database = getDatabase(app);
 
 // Configure Google Auth Provider
+
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   prompt: 'select_account',

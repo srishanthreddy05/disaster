@@ -10,6 +10,7 @@ export interface UserData {
   createdAt: number;
 }
 
+
 // Authentication context type
 export interface AuthContextType {
   user: any;
