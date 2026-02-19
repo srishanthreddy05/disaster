@@ -44,58 +44,101 @@ SIMILARITY_THRESHOLD = 0.55
 
 
 def init_firebase() -> None:
-    """Initialize Firebase Admin SDK for Realtime Database access."""
+    """
+    Initialize Firebase Admin SDK for Realtime Database access.
+
+    Supports two credential modes with clear precedence:
+    1. FIREBASE_SERVICE_ACCOUNT_JSON: Production mode (Render, cloud platforms)
+       - Must be a valid JSON string (parsed with json.loads)
+       - Prioritized over file path if both are present
+
+    2. FIREBASE_SERVICE_ACCOUNT: Local development mode
+       - Must be a file path to service account JSON
+       - Used if JSON environment variable is not set
+
+    FIREBASE_DB_URL is always required and validates the database connection.
+
+    Raises:
+        RuntimeError: If configuration is incomplete or invalid
+    """
+    # Prevent duplicate initialization
     if firebase_admin._apps:
         print("[Firebase] Already initialized, skipping re-initialization")
         return
 
+    # Step 1: Validate database URL (required in all modes)
     database_url = os.getenv("FIREBASE_DB_URL", "").strip()
     if not database_url:
-        error_msg = "FIREBASE_DB_URL environment variable is missing. Please set it in .env file."
+        error_msg = "FIREBASE_DB_URL is not configured. Set it in .env file or environment variables."
         print(f"[Firebase] [ERROR] {error_msg}")
         raise RuntimeError(error_msg)
 
-    service_account_path = os.getenv("FIREBASE_SERVICE_ACCOUNT", "").strip()
-    service_account_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+    print(f"[Firebase] Using database URL: {database_url}")
+
+    # Step 2: Get credential configuration values
+    service_account_json_str = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+    service_account_file_path = os.getenv("FIREBASE_SERVICE_ACCOUNT", "").strip()
 
     cred = None
 
-    if service_account_path:
-        if not Path(service_account_path).exists():
-            error_msg = f"Service account file not found: {service_account_path}"
+    # Step 3a: Priority 1 - Load from JSON string (production mode)
+    if service_account_json_str:
+        print("[Firebase] Attempting to load credentials from FIREBASE_SERVICE_ACCOUNT_JSON...")
+
+        try:
+            # Parse JSON string to dict
+            service_account_dict = json.loads(service_account_json_str)
+            print("[Firebase] [OK] JSON string parsed successfully")
+        except json.JSONDecodeError as e:
+            error_msg = f"FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON: {e}"
+            print(f"[Firebase] [ERROR] {error_msg}")
+            raise RuntimeError(error_msg) from e
+
+        try:
+            # Convert to Firebase credentials
+            cred = credentials.Certificate(service_account_dict)
+            print("[Firebase] [OK] Credentials loaded from JSON environment variable")
+        except Exception as e:
+            error_msg = f"Firebase Certificate() failed to process JSON credentials: {e}"
+            print(f"[Firebase] [ERROR] {error_msg}")
+            raise RuntimeError(error_msg) from e
+
+    # Step 3b: Priority 2 - Load from file path (local development mode)
+    elif service_account_file_path:
+        print("[Firebase] FIREBASE_SERVICE_ACCOUNT_JSON not set, checking file path...")
+        print(f"[Firebase] Looking for credentials file: {service_account_file_path}")
+
+        if not Path(service_account_file_path).exists():
+            error_msg = f"Service account file not found at: {service_account_file_path}"
             print(f"[Firebase] [ERROR] {error_msg}")
             raise RuntimeError(error_msg)
+
         try:
-            cred = credentials.Certificate(service_account_path)
-            print(f"[Firebase] [SUCCESS] Loaded service account from file: {service_account_path}")
+            cred = credentials.Certificate(service_account_file_path)
+            print(f"[Firebase] [OK] Credentials loaded from file: {service_account_file_path}")
         except Exception as e:
-            error_msg = f"Failed to load service account from file: {e}"
+            error_msg = f"Firebase Certificate() failed to load file credentials: {e}"
             print(f"[Firebase] [ERROR] {error_msg}")
             raise RuntimeError(error_msg) from e
 
-    elif service_account_json:
-        try:
-            cred = credentials.Certificate(json.loads(service_account_json))
-            print("[Firebase] [SUCCESS] Loaded service account from JSON environment variable")
-        except json.JSONDecodeError as e:
-            error_msg = f"Invalid JSON in FIREBASE_SERVICE_ACCOUNT_JSON: {e}"
-            print(f"[Firebase] [ERROR] {error_msg}")
-            raise RuntimeError(error_msg) from e
-        except Exception as e:
-            error_msg = f"Failed to load service account from JSON: {e}"
-            print(f"[Firebase] [ERROR] {error_msg}")
-            raise RuntimeError(error_msg) from e
-
+    # Step 3c: No credentials found
     if cred is None:
-        error_msg = "Neither FIREBASE_SERVICE_ACCOUNT nor FIREBASE_SERVICE_ACCOUNT_JSON is set. Please configure one in .env"
+        error_msg = (
+            "No Firebase credentials found. Configure one of:\n"
+            "  - FIREBASE_SERVICE_ACCOUNT_JSON (JSON string, for production)\n"
+            "  - FIREBASE_SERVICE_ACCOUNT (file path, for local development)\n"
+            "Please set one in .env or environment variables."
+        )
         print(f"[Firebase] [ERROR] {error_msg}")
         raise RuntimeError(error_msg)
 
+    # Step 4: Initialize Firebase app with credentials and database URL
     try:
+        print("[Firebase] Initializing Firebase app...")
         initialize_app(cred, {"databaseURL": database_url})
-        print(f"[Firebase] [SUCCESS] Initialized with database URL: {database_url}")
+        print("[Firebase] [OK] Firebase app initialized successfully")
     except Exception as e:
-        error_msg = f"Failed to initialize Firebase: {e}"
+        error_msg = f"Firebase initialization failed: {e}"
         print(f"[Firebase] [ERROR] {error_msg}")
         raise RuntimeError(error_msg) from e
 
