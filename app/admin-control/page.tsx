@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import {
   DrawingManager,
   GoogleMap,
@@ -38,6 +38,26 @@ const ADMIN_ID = '1234';
 const ADMIN_PASSWORD = '1234';
 const AUTH_STORAGE_KEY = 'admin-control-auth';
 
+const authStore = {
+  listeners: new Set<() => void>(),
+  subscribe(listener: () => void) {
+    authStore.listeners.add(listener);
+    return () => authStore.listeners.delete(listener);
+  },
+  emit() {
+    authStore.listeners.forEach((listener) => listener());
+  },
+  getSnapshot() {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+    return localStorage.getItem(AUTH_STORAGE_KEY) === 'true';
+  },
+  getServerSnapshot() {
+    return false;
+  },
+};
+
 const libraries: NonNullable<Parameters<typeof useJsApiLoader>[0]['libraries']> = ['drawing', 'geometry'];
 
 const mapContainerStyle = {
@@ -63,12 +83,11 @@ const zoneFill: Record<ZoneType, string> = {
 };
 
 export default function AdminControlPage() {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    if (typeof window === 'undefined') {
-      return false;
-    }
-    return localStorage.getItem(AUTH_STORAGE_KEY) === 'true';
-  });
+  const isAuthenticated = useSyncExternalStore(
+    authStore.subscribe,
+    authStore.getSnapshot,
+    authStore.getServerSnapshot
+  );
   const [loginId, setLoginId] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
@@ -148,7 +167,7 @@ export default function AdminControlPage() {
 
     if (loginId === ADMIN_ID && loginPassword === ADMIN_PASSWORD) {
       localStorage.setItem(AUTH_STORAGE_KEY, 'true');
-      setIsAuthenticated(true);
+      authStore.emit();
       setLoginError('');
       return;
     }
@@ -158,7 +177,7 @@ export default function AdminControlPage() {
 
   const handleLogout = () => {
     localStorage.removeItem(AUTH_STORAGE_KEY);
-    setIsAuthenticated(false);
+    authStore.emit();
   };
 
   const handlePolygonComplete = async (polygon: google.maps.Polygon) => {
