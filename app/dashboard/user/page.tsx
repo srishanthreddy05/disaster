@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { useAuth } from '@/hooks/useAuth';
-import { UserCircle, AlertCircle, MapPin, Heart, CheckCircle, Loader2, Users } from 'lucide-react';
+import { UserCircle, AlertCircle, MapPin, Heart, CheckCircle, Loader2, Users, Mic, MicOff } from 'lucide-react';
 import DashboardLayout from '@/app/dashboard/layout-base';
 import { UserLocationMap } from '@/components/UserLocationMap';
 import { ref, set, onValue, off } from 'firebase/database';
@@ -24,13 +24,202 @@ type UserStatusData = {
   assignedVolunteerId?: string;
   assignedVolunteerName?: string;
   assignedAt?: string;
+  triggeredBy?: string;
 };
+
+// Voice keywords for emergency detection
+const EMERGENCY_KEYWORDS = ['help', 'need help', 'emergency', 'save me'];
 
 export default function UserDashboard() {
   const { user, role } = useAuth();
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [userStatus, setUserStatus] = useState<UserStatusData | null>(null);
+
+  // Voice recognition states
+  const [isListening, setIsListening] = useState(false);
+  const [emergencyDetected, setEmergencyDetected] = useState(false);
+  const [hasSpokenResponse, setHasSpokenResponse] = useState(false);
+  const [hasAnnouncedVolunteer, setHasAnnouncedVolunteer] = useState(false);
+  const [voiceSupported, setVoiceSupported] = useState(false);
+
+  const recognitionRef = useRef<any>(null);
+  const isMountedRef = useRef(true);
+
+  // Voice synthesis helper
+  const speak = (text: string) => {
+    if (!window.speechSynthesis) {
+      return;
+    }
+
+    // Cancel any ongoing speech
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'en-US';
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    window.speechSynthesis.speak(utterance);
+  };
+
+  // Voice-triggered emergency function
+  const triggerVoiceEmergency = async () => {
+    if (!user || emergencyDetected) {
+      return; // Prevent duplicate triggers
+    }
+
+    setEmergencyDetected(true);
+    setLoading(true);
+
+    try {
+      // Get user's current location
+      const location = await new Promise<{ lat: number; lng: number }>((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(new Error('Geolocation not supported'));
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            resolve({
+              lat: position.coords.latitude,
+              lng: position.coords.longitude,
+            });
+          },
+          (error) => {
+            reject(error);
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0,
+          }
+        );
+      });
+
+      // Save to Firebase with voice trigger indicator
+      const statusRef = ref(database, `user_status/${user.uid}`);
+      const statusData = {
+        uid: user.uid,
+        name: user.displayName || 'Unknown',
+        email: user.email,
+        status: 'need_help',
+        triggeredBy: 'voice',
+        location: {
+          latitude: location.lat,
+          longitude: location.lng,
+        },
+        timestamp: Date.now(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await set(statusRef, statusData);
+
+      // Speak confirmation
+      if (!hasSpokenResponse) {
+        speak('Emergency request sent. Finding volunteer.');
+        setHasSpokenResponse(true);
+      }
+
+      setMessage({
+        type: 'success',
+        text: '🎙️ Voice emergency detected! Help request sent to volunteers.',
+      });
+    } catch (error: any) {
+      console.error('Voice emergency error:', error);
+      setMessage({
+        type: 'error',
+        text: 'Failed to send voice emergency. Please use the button.',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Voice recognition setup
+  useEffect(() => {
+    if (typeof window === 'undefined' || !user?.uid) {
+      return;
+    }
+
+    // Check for speech recognition support
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      console.warn('Speech Recognition not supported in this browser');
+      setVoiceSupported(false);
+      return;
+    }
+
+    setVoiceSupported(true);
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      console.log('[Voice] Recognition started');
+    };
+
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[event.results.length - 1][0].transcript.toLowerCase().trim();
+      console.log('[Voice] Recognized:', transcript);
+
+      // Check for emergency keywords
+      const isEmergency = EMERGENCY_KEYWORDS.some((keyword) => transcript.includes(keyword));
+
+      if (isEmergency && !emergencyDetected) {
+        console.log('[Voice] Emergency keyword detected!');
+        triggerVoiceEmergency();
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error('[Voice] Recognition error:', event.error);
+      if (event.error === 'not-allowed') {
+        setVoiceSupported(false);
+      }
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      console.log('[Voice] Recognition ended');
+
+      // Auto-restart if still mounted and supported
+      if (isMountedRef.current && voiceSupported) {
+        setTimeout(() => {
+          try {
+            recognition.start();
+          } catch (error) {
+            console.error('[Voice] Failed to restart:', error);
+          }
+        }, 100);
+      }
+    };
+
+    recognitionRef.current = recognition;
+
+    // Start recognition
+    try {
+      recognition.start();
+    } catch (error) {
+      console.error('[Voice] Failed to start recognition:', error);
+    }
+
+    return () => {
+      isMountedRef.current = false;
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (error) {
+          console.error('[Voice] Cleanup error:', error);
+        }
+      }
+      window.speechSynthesis?.cancel();
+    };
+  }, [user?.uid, voiceSupported, emergencyDetected]);
 
   // Realtime listener for user's own status
   useEffect(() => {
@@ -43,12 +232,34 @@ export default function UserDashboard() {
     const listener = onValue(statusRef, (snapshot) => {
       const data = snapshot.val() as UserStatusData | null;
       setUserStatus(data);
+
+      // Announce volunteer assignment
+      if (
+        data?.status === 'assigned' &&
+        data.assignedVolunteerName &&
+        !hasAnnouncedVolunteer
+      ) {
+        const announcement = `Volunteer ${data.assignedVolunteerName} is on the way. Please stay calm.`;
+        speak(announcement);
+        setHasAnnouncedVolunteer(true);
+      }
+
+      // Reset announcement flag if status changes away from assigned
+      if (data?.status !== 'assigned' && hasAnnouncedVolunteer) {
+        setHasAnnouncedVolunteer(false);
+      }
+
+      // Reset emergency detection if status becomes safe
+      if (data?.status === 'safe' && emergencyDetected) {
+        setEmergencyDetected(false);
+        setHasSpokenResponse(false);
+      }
     });
 
     return () => {
       off(statusRef, 'value', listener);
     };
-  }, [user?.uid]);
+  }, [user?.uid, hasAnnouncedVolunteer, emergencyDetected]);
 
   const saveUserStatus = async (status: 'safe' | 'need_help') => {
     if (!user) return;
@@ -142,6 +353,29 @@ export default function UserDashboard() {
                   </p>
                 </div>
               </div>
+              {/* Voice indicators */}
+              {voiceSupported && (
+                <div className="flex items-center gap-2">
+                  {isListening && !emergencyDetected && (
+                    <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-blue-900/40 border border-blue-700">
+                      <Mic size={16} className="text-blue-400 animate-pulse" />
+                      <span className="text-xs text-blue-300">Listening...</span>
+                    </div>
+                  )}
+                  {emergencyDetected && (
+                    <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-red-900/60 border border-red-700">
+                      <AlertCircle size={16} className="text-red-400" />
+                      <span className="text-xs text-red-300 font-semibold">Emergency Detected</span>
+                    </div>
+                  )}
+                  {!voiceSupported && (
+                    <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-gray-800 border border-gray-700">
+                      <MicOff size={16} className="text-gray-500" />
+                      <span className="text-xs text-gray-500">Voice Disabled</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -275,6 +509,7 @@ export default function UserDashboard() {
                 <ul className="text-blue-200 space-y-2 text-sm">
                   <li>• Click "I'm Safe" to let others know you're okay during a disaster</li>
                   <li>• Click "Need Help" to send an emergency alert to volunteers</li>
+                  <li>• Say "help", "need help", "emergency", or "save me" for voice-activated emergency</li>
                   <li>• Enable location services for accurate status tracking</li>
                   <li>• Check the map regularly for near-real-time updates</li>
                   <li>• Your location and status are saved when you update</li>
