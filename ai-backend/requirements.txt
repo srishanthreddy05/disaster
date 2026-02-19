@@ -1,7 +1,9 @@
 fastapi
 uvicorn
 insightface
-opencv-python-headless
+onnxruntime
+opencv-python
 numpy
-python-multipart
 firebase-admin
+python-multipart
+python-dotenv

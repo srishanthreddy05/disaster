@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import Link from 'next/link';
 import {
   DrawingManager,
   GoogleMap,
@@ -459,6 +460,19 @@ export default function AdminControlPage() {
               <p>Zones: {zones.length}</p>
               <p>Map Points: {mapPoints.length}</p>
             </div>
+          </section>
+
+          <section className="border border-gray-800 rounded-xl p-4 bg-gray-950/70 space-y-3">
+            <h2 className="text-lg font-medium">Face Verification</h2>
+            <p className="text-xs text-gray-400">
+              Verify uploaded face images against stored missing-person embeddings.
+            </p>
+            <Link
+              href="/dashboard/admin/verify"
+              className="block w-full text-center py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm font-medium"
+            >
+              Open Verification Portal
+            </Link>
           </section>
         </aside>
 

@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useState } from 'react';
+import Link from 'next/link';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { useAuth } from '@/hooks/useAuth';
-import { UserCircle, AlertCircle, MapPin, Heart, CheckCircle, Loader2 } from 'lucide-react';
+import { UserCircle, AlertCircle, MapPin, Heart, CheckCircle, Loader2, Users } from 'lucide-react';
 import DashboardLayout from '@/app/dashboard/layout-base';
 import { UserLocationMap } from '@/components/UserLocationMap';
 import { ref, set } from 'firebase/database';
@@ -129,7 +130,7 @@ export default function UserDashboard() {
           )}
 
           {/* Quick Actions - Status Buttons */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {/* I'm Safe Button */}
             <button
               onClick={() => saveUserStatus('safe')}
@@ -161,6 +162,19 @@ export default function UserDashboard() {
                 Send an emergency alert to volunteers and rescue teams.
               </p>
             </button>
+
+            {/* Report Missing Person Button */}
+            <Link href="/dashboard/user/missing">
+              <div className="bg-purple-900 border border-purple-700 rounded-xl p-6 hover:border-purple-500 transition duration-300 transform hover:-translate-y-2 cursor-pointer h-full text-left">
+                <div className="flex items-center mb-4">
+                  <Users size={32} className="text-purple-400" />
+                </div>
+                <h3 className="text-2xl font-bold mb-2">Report Missing</h3>
+                <p className="text-purple-200">
+                  Help find missing persons with photo matching.
+                </p>
+              </div>
+            </Link>
           </div>
 
           {/* Live Location Map */}
