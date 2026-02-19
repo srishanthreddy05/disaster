@@ -297,8 +297,8 @@ export default function AdminControlPage() {
 
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-6">
-        <div className="w-full max-w-md border border-gray-800 bg-gray-900 rounded-xl p-8 shadow-2xl">
+      <div className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-6 overflow-x-hidden">
+        <div className="w-full max-w-md border border-gray-800 bg-gray-900 rounded-xl p-4 sm:p-6 lg:p-8 shadow-2xl">
           <h1 className="text-2xl font-semibold mb-2">Admin Control Login</h1>
           <p className="text-sm text-gray-400 mb-6">Restricted access for emergency command center</p>
 
@@ -308,7 +308,7 @@ export default function AdminControlPage() {
               <input
                 value={loginId}
                 onChange={(event) => setLoginId(event.target.value)}
-                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-gray-100 outline-none focus:border-gray-500"
+                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-3 text-gray-100 outline-none focus:border-gray-500"
                 placeholder="Enter ID"
                 required
               />
@@ -320,7 +320,7 @@ export default function AdminControlPage() {
                 type="password"
                 value={loginPassword}
                 onChange={(event) => setLoginPassword(event.target.value)}
-                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-gray-100 outline-none focus:border-gray-500"
+                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-3 text-gray-100 outline-none focus:border-gray-500"
                 placeholder="Enter password"
                 required
               />
@@ -341,10 +341,10 @@ export default function AdminControlPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-100">
-      <div className="flex h-screen">
-        <aside className="w-[30%] min-w-[360px] max-w-[460px] border-r border-gray-800 bg-gray-900/80 backdrop-blur-sm overflow-y-auto p-6 space-y-8">
-          <div className="flex items-center justify-between">
+    <div className="min-h-screen bg-gray-950 text-gray-100 overflow-x-hidden">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-7xl mx-auto w-full min-h-screen lg:h-screen p-4 sm:p-6 lg:p-8">
+        <aside className="w-full border border-gray-800 bg-gray-900/80 backdrop-blur-sm overflow-y-auto rounded-xl p-4 sm:p-6 lg:p-8 space-y-8">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
               <h1 className="text-2xl font-semibold">Command Center</h1>
               <p className="text-xs text-gray-400 mt-1">Admin Disaster Control Panel</p>
@@ -364,7 +364,7 @@ export default function AdminControlPage() {
               <input
                 value={alertTitle}
                 onChange={(event) => setAlertTitle(event.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-sm"
                 placeholder="Alert Title"
                 required
               />
@@ -372,7 +372,7 @@ export default function AdminControlPage() {
               <textarea
                 value={alertMessage}
                 onChange={(event) => setAlertMessage(event.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm min-h-24"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-sm min-h-24"
                 placeholder="Alert Message"
                 required
               />
@@ -380,7 +380,7 @@ export default function AdminControlPage() {
               <select
                 value={alertSeverity}
                 onChange={(event) => setAlertSeverity(event.target.value as Severity)}
-                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-sm"
               >
                 <option value="low">Low</option>
                 <option value="medium">Medium</option>
@@ -476,7 +476,7 @@ export default function AdminControlPage() {
           </section>
         </aside>
 
-        <main className="w-[70%] h-full relative">
+        <main className="w-full relative h-[350px] sm:h-[400px] lg:h-full rounded-xl overflow-hidden">
           {adminLocationWarning && (
             <div className="absolute top-4 left-4 z-10 bg-yellow-200 text-yellow-900 text-xs px-3 py-2 rounded-lg shadow">
               {adminLocationWarning}
@@ -573,7 +573,7 @@ export default function AdminControlPage() {
 
       {pointModalOpen && pendingPointCoords && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center px-4">
-          <div className="w-full max-w-md rounded-xl border border-gray-800 bg-gray-900 p-6">
+          <div className="w-full max-w-md rounded-xl border border-gray-800 bg-gray-900 p-4 sm:p-6 lg:p-8">
             <h3 className="text-xl font-semibold mb-4">Add Map Point</h3>
             <p className="text-xs text-gray-400 mb-4">
               Lat: {pendingPointCoords.lat.toFixed(6)} | Lng: {pendingPointCoords.lng.toFixed(6)}
@@ -583,7 +583,7 @@ export default function AdminControlPage() {
               <input
                 value={pointName}
                 onChange={(event) => setPointName(event.target.value)}
-                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-3 text-sm"
                 placeholder="Point Name"
                 required
               />
@@ -591,7 +591,7 @@ export default function AdminControlPage() {
               <select
                 value={pointType}
                 onChange={(event) => setPointType(event.target.value as PointType)}
-                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-3 text-sm"
               >
                 <option value="shelter">Shelter</option>
                 <option value="safe_location">Safe Location</option>
@@ -599,17 +599,17 @@ export default function AdminControlPage() {
                 <option value="resource">Resource</option>
               </select>
 
-              <div className="flex gap-3 pt-2">
+              <div className="flex flex-col sm:flex-row gap-3 pt-2">
                 <button
                   type="button"
                   onClick={closePointModal}
-                  className="w-1/2 py-2 rounded-lg border border-gray-700 hover:bg-gray-800 text-sm"
+                  className="w-full py-2 rounded-lg border border-gray-700 hover:bg-gray-800 text-sm"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="w-1/2 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-sm font-medium"
+                  className="w-full py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-sm font-medium"
                 >
                   Save Point
                 </button>
