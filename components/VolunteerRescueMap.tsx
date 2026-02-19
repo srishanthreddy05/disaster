@@ -91,8 +91,6 @@ export function VolunteerRescueMap({ user }: VolunteerRescueMapProps) {
 
         const volunteerRef = ref(database, `volunteers/${user.uid}`);
         await set(volunteerRef, {
-          name: user.displayName || 'Volunteer',
-          email: user.email || '',
           location: nextLocation,
           updatedAt: Date.now(),
         });
@@ -196,6 +194,9 @@ export function VolunteerRescueMap({ user }: VolunteerRescueMapProps) {
     } else {
       volunteerMarkerRef.current.setPosition(volunteerLocation);
     }
+
+    mapRef.current.setCenter(volunteerLocation);
+    mapRef.current.setZoom(14);
   }, [isLoaded, user, volunteerLocation]);
 
   useEffect(() => {
@@ -297,7 +298,7 @@ export function VolunteerRescueMap({ user }: VolunteerRescueMapProps) {
             <GoogleMap
               mapContainerStyle={mapContainerStyle}
               center={volunteerLocation || defaultCenter}
-              zoom={volunteerLocation ? 13 : 11}
+              zoom={14}
               onLoad={(map) => {
                 mapRef.current = map;
               }}
@@ -305,23 +306,12 @@ export function VolunteerRescueMap({ user }: VolunteerRescueMapProps) {
                 mapRef.current = null;
               }}
               options={{
+                disableDefaultUI: false,
+                fullscreenControl: true,
+                zoomControl: true,
                 mapTypeControl: false,
                 streetViewControl: false,
-                fullscreenControl: false,
-                styles: [
-                  {
-                    elementType: 'geometry',
-                    stylers: [{ color: '#1f2937' }],
-                  },
-                  {
-                    elementType: 'labels.text.fill',
-                    stylers: [{ color: '#9ca3af' }],
-                  },
-                  {
-                    elementType: 'labels.text.stroke',
-                    stylers: [{ color: '#111827' }],
-                  },
-                ],
+                styles: [],
               }}
             />
           )}

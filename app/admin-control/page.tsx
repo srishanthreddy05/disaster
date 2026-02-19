@@ -105,6 +105,13 @@ export default function AdminControlPage() {
   const [pendingPointCoords, setPendingPointCoords] = useState<LatLng | null>(null);
   const [pointName, setPointName] = useState('');
   const [pointType, setPointType] = useState<PointType>('shelter');
+  const [adminLocation, setAdminLocation] = useState<LatLng>(() => chennaiCenter);
+  const [adminLocationWarning, setAdminLocationWarning] = useState<string | null>(() => {
+    if (typeof navigator === 'undefined') {
+      return null;
+    }
+    return navigator.geolocation ? null : 'Geolocation is not supported. Using city center.';
+  });
 
   const db = useMemo(() => getDatabase(app), []);
 
@@ -115,6 +122,35 @@ export default function AdminControlPage() {
     googleMapsApiKey,
     libraries,
   });
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
+    if (!navigator.geolocation) {
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setAdminLocation({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        });
+        setAdminLocationWarning(null);
+      },
+      () => {
+        setAdminLocation(chennaiCenter);
+        setAdminLocationWarning('Location permission denied. Using city center.');
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      }
+    );
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -427,6 +463,11 @@ export default function AdminControlPage() {
         </aside>
 
         <main className="w-[70%] h-full relative">
+          {adminLocationWarning && (
+            <div className="absolute top-4 left-4 z-10 bg-yellow-200 text-yellow-900 text-xs px-3 py-2 rounded-lg shadow">
+              {adminLocationWarning}
+            </div>
+          )}
           {!googleMapsApiKey && (
             <div className="h-full flex items-center justify-center text-sm text-red-300 bg-gray-950">
               Google Maps API key not configured.
@@ -448,29 +489,25 @@ export default function AdminControlPage() {
           {googleMapsApiKey && !loadError && isLoaded && (
             <GoogleMap
               mapContainerStyle={mapContainerStyle}
-              center={chennaiCenter}
-              zoom={12}
+              center={adminLocation || chennaiCenter}
+              zoom={13}
               onClick={handleMapClick}
               options={{
+                disableDefaultUI: false,
+                fullscreenControl: true,
+                zoomControl: true,
                 mapTypeControl: false,
                 streetViewControl: false,
-                fullscreenControl: false,
-                styles: [
-                  {
-                    elementType: 'geometry',
-                    stylers: [{ color: '#1f2937' }],
-                  },
-                  {
-                    elementType: 'labels.text.stroke',
-                    stylers: [{ color: '#111827' }],
-                  },
-                  {
-                    elementType: 'labels.text.fill',
-                    stylers: [{ color: '#9ca3af' }],
-                  },
-                ],
+                styles: [],
               }}
             >
+              {adminLocation && (
+                <Marker
+                  position={adminLocation}
+                  label="Admin Location"
+                  icon="https://maps.google.com/mapfiles/ms/icons/purple-dot.png"
+                />
+              )}
               <DrawingManager
                 onPolygonComplete={handlePolygonComplete}
                 options={{

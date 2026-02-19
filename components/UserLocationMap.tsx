@@ -42,8 +42,8 @@ const mapContainerStyle = {
 };
 
 const defaultCenter = {
-  lat: 13.0827, // Chennai coordinates
-  lng: 80.2707,
+  lat: 17.385,
+  lng: 78.486,
 };
 
 const polygonColors: Record<ZoneType, string> = {
@@ -75,6 +75,7 @@ export function UserLocationMap() {
   const [mapReady, setMapReady] = useState(false);
 
   const mapRef = useRef<google.maps.Map | null>(null);
+  const userMarkerRef = useRef<google.maps.Marker | null>(null);
   const polygonsRef = useRef<google.maps.Polygon[]>([]);
   const markersRef = useRef<google.maps.Marker[]>([]);
   const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
@@ -254,8 +255,9 @@ export function UserLocationMap() {
         
         switch (error.code) {
           case error.PERMISSION_DENIED:
-            errorMessage = 'Location permission denied. Please enable location access in your browser settings.';
+            errorMessage = 'Location permission denied. Showing default location.';
             setPermissionStatus('denied');
+            setUserLocation(defaultCenter);
             break;
           case error.POSITION_UNAVAILABLE:
             errorMessage = 'Location information is unavailable.';
@@ -280,6 +282,34 @@ export function UserLocationMap() {
   useEffect(() => {
     requestLocation();
   }, []);
+
+  useEffect(() => {
+    if (!isLoaded || !mapReady || !mapRef.current || !userLocation) {
+      return;
+    }
+
+    if (!userMarkerRef.current) {
+      userMarkerRef.current = new google.maps.Marker({
+        position: userLocation,
+        map: mapRef.current,
+        label: {
+          text: 'You',
+          color: '#1e3a8a',
+          fontWeight: '600',
+        },
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 8,
+          fillColor: '#2563eb',
+          fillOpacity: 1,
+          strokeColor: '#ffffff',
+          strokeWeight: 2,
+        },
+      });
+    } else {
+      userMarkerRef.current.setPosition(userLocation);
+    }
+  }, [isLoaded, mapReady, userLocation]);
 
   useEffect(() => {
     if (!isLoaded || !mapReady || !mapRef.current) {
@@ -323,6 +353,7 @@ export function UserLocationMap() {
     return () => {
       clearPolygons();
       clearMarkers();
+      userMarkerRef.current?.setMap(null);
       infoWindowRef.current?.close();
       mapRef.current = null;
     };
@@ -434,7 +465,7 @@ export function UserLocationMap() {
           <GoogleMap
             mapContainerStyle={mapContainerStyle}
             center={userLocation || defaultCenter}
-            zoom={userLocation ? 15 : 12}
+            zoom={14}
             onLoad={(map) => {
               mapRef.current = map;
               setMapReady(true);
@@ -445,25 +476,11 @@ export function UserLocationMap() {
             }}
             options={{
               disableDefaultUI: false,
-              zoomControl: true,
-              streetViewControl: false,
-              mapTypeControl: true,
               fullscreenControl: true,
-              mapTypeId: 'roadmap',
-              styles: [
-                {
-                  elementType: 'geometry',
-                  stylers: [{ color: '#1f2937' }],
-                },
-                {
-                  elementType: 'labels.text.fill',
-                  stylers: [{ color: '#9ca3af' }],
-                },
-                {
-                  elementType: 'labels.text.stroke',
-                  stylers: [{ color: '#111827' }],
-                },
-              ],
+              zoomControl: true,
+              mapTypeControl: false,
+              streetViewControl: false,
+              styles: [],
             }}
           />
 
