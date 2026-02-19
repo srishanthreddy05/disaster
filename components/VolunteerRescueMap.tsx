@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { GoogleMap, useJsApiLoader } from '@react-google-maps/api';
-import { off, onValue, ref, set } from 'firebase/database';
+import { off, onValue, ref, runTransaction, set } from 'firebase/database';
 import { database } from '@/lib/firebase';
+import { AlertCircle, CheckCircle, Loader2, Lock } from 'lucide-react';
 
-type UserStatus = 'safe' | 'need_help';
+type UserStatus = 'safe' | 'need_help' | 'assigned';
 
 type VolunteerUser = {
   uid: string;
@@ -18,6 +19,9 @@ type UserStatusRecord = {
   name: string;
   status: UserStatus;
   location: { lat: number; lng: number };
+  assignedVolunteerId?: string;
+  assignedVolunteerName?: string;
+  assignedAt?: string;
 };
 
 type UserStatusView = UserStatusRecord & {
@@ -44,7 +48,44 @@ const defaultCenter = {
 const markerIconUrl: Record<UserStatus, string> = {
   need_help: 'https://maps.google.com/mapfiles/ms/icons/red-dot.png',
   safe: 'https://maps.google.com/mapfiles/ms/icons/green-dot.png',
+  assigned: 'https://maps.google.com/mapfiles/ms/icons/red-dot.png',
 };
+
+// Transaction-based assignment function
+async function assignUserToVolunteer(
+  userUid: string,
+  volunteerUid: string,
+  volunteerName: string | null | undefined
+): Promise<boolean> {
+  try {
+    const statusRef = ref(database, `user_status/${userUid}`);
+    const result = await runTransaction(statusRef, (current: any) => {
+      if (!current) {
+        return current;
+      }
+
+      // Only assign if currently need_help (prevent overwriting existing assignments)
+      if (current.status === 'need_help') {
+        return {
+          ...current,
+          status: 'assigned',
+          assignedVolunteerId: volunteerUid,
+          assignedVolunteerName: volunteerName || 'Volunteer',
+          assignedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      }
+
+      // Return unchanged if already assigned (no overwrite)
+      return current;
+    });
+
+    return result.committed;
+  } catch (error) {
+    console.error('[Assignment] Transaction failed:', error);
+    return false;
+  }
+}
 
 export function VolunteerRescueMap({ user }: VolunteerRescueMapProps) {
   const [volunteerLocation, setVolunteerLocation] = useState<{ lat: number; lng: number } | null>(null);
@@ -55,6 +96,7 @@ export function VolunteerRescueMap({ user }: VolunteerRescueMapProps) {
     return navigator.geolocation ? null : 'Geolocation is not supported by your browser.';
   });
   const [userStatuses, setUserStatuses] = useState<UserStatusRecord[]>([]);
+  const [assigningUserIds, setAssigningUserIds] = useState<Set<string>>(new Set());
 
   const mapRef = useRef<google.maps.Map | null>(null);
   const volunteerMarkerRef = useRef<google.maps.Marker | null>(null);
@@ -131,6 +173,9 @@ export function VolunteerRescueMap({ user }: VolunteerRescueMapProps) {
                 latitude?: number;
                 longitude?: number;
               };
+              assignedVolunteerId?: string;
+              assignedVolunteerName?: string;
+              assignedAt?: string;
             }
           >
         | null;
@@ -140,7 +185,7 @@ export function VolunteerRescueMap({ user }: VolunteerRescueMapProps) {
       }
 
       const parsed: UserStatusRecord[] = Object.entries(value)
-        .map(([uid, record]) => {
+        .map(([uid, record]): UserStatusRecord | null => {
           const rawLocation = record?.location || {};
           const lat = typeof rawLocation.lat === 'number' ? rawLocation.lat : rawLocation.latitude;
           const lng = typeof rawLocation.lng === 'number' ? rawLocation.lng : rawLocation.longitude;
@@ -149,14 +194,21 @@ export function VolunteerRescueMap({ user }: VolunteerRescueMapProps) {
             return null;
           }
 
+          const status = record?.status === 'need_help' || record?.status === 'assigned' || record?.status === 'safe'
+            ? record.status
+            : 'safe';
+
           return {
             uid,
             name: String(record?.name || 'Unknown'),
-            status: record?.status === 'need_help' ? 'need_help' : 'safe',
+            status,
             location: { lat, lng },
-          } satisfies UserStatusRecord;
+            assignedVolunteerId: record?.assignedVolunteerId,
+            assignedVolunteerName: record?.assignedVolunteerName,
+            assignedAt: record?.assignedAt,
+          };
         })
-        .filter((item): item is UserStatusRecord => Boolean(item));
+        .filter((item): item is UserStatusRecord => item !== null);
 
       setUserStatuses(parsed);
     });
@@ -262,8 +314,9 @@ export function VolunteerRescueMap({ user }: VolunteerRescueMapProps) {
       } satisfies UserStatusView;
     });
 
+    // Show both "need_help" and "assigned" in Need Help list
     const needHelp = withMetrics
-      .filter((item) => item.status === 'need_help')
+      .filter((item) => item.status === 'need_help' || item.status === 'assigned')
       .sort((a, b) => a.etaMinutes - b.etaMinutes);
     const safe = withMetrics
       .filter((item) => item.status === 'safe')
@@ -271,6 +324,26 @@ export function VolunteerRescueMap({ user }: VolunteerRescueMapProps) {
 
     return { needHelpList: needHelp, safeList: safe };
   }, [isLoaded, user, userStatuses, volunteerLocation]);
+
+  const handleAcknowledge = async (userUid: string) => {
+    if (!user?.uid || !user?.displayName) {
+      return;
+    }
+
+    setAssigningUserIds((prev) => new Set(prev).add(userUid));
+
+    try {
+      await assignUserToVolunteer(userUid, user.uid, user.displayName);
+    } catch (error) {
+      console.error('[UI] Acknowledge failed:', error);
+    } finally {
+      setAssigningUserIds((prev) => {
+        const next = new Set(prev);
+        next.delete(userUid);
+        return next;
+      });
+    }
+  };
 
   return (
     <div className="bg-gray-950 border border-gray-800 rounded-2xl overflow-hidden">
@@ -333,18 +406,72 @@ export function VolunteerRescueMap({ user }: VolunteerRescueMapProps) {
               {needHelpList.length === 0 && (
                 <div className="text-xs text-gray-500">No active rescue requests.</div>
               )}
-              {needHelpList.map((item, index) => (
-                <div
-                  key={item.uid}
-                  className="bg-gray-950 border border-gray-800 rounded-xl p-3"
-                >
-                  <p className={`text-sm ${index === 0 ? 'font-bold' : 'font-medium'}`}>{item.name}</p>
-                  <div className="text-xs text-gray-400 mt-2 space-y-1">
-                    <p>Distance: {item.distanceKm.toFixed(1)} km</p>
-                    <p>ETA: {item.etaMinutes.toFixed(0)} mins</p>
+              {needHelpList.map((item, index) => {
+                const isYourMission = item.status === 'assigned' && item.assignedVolunteerId === user?.uid;
+                const isAlreadyAssigned = item.status === 'assigned' && item.assignedVolunteerId !== user?.uid;
+                const isLoading = assigningUserIds.has(item.uid);
+
+                return (
+                  <div
+                    key={item.uid}
+                    className="bg-gray-950 border border-gray-800 rounded-xl p-3"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <p className={`text-sm ${index === 0 ? 'font-bold' : 'font-medium'} flex-1`}>{item.name}</p>
+                      {isYourMission && (
+                        <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-green-900/40 border border-green-700 text-green-300 white-space-nowrap">
+                          <span>🟢</span>
+                          Your Mission
+                        </span>
+                      )}
+                      {isAlreadyAssigned && (
+                        <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-gray-800 border border-gray-700 text-gray-300 whitespace-nowrap">
+                          <Lock size={12} />
+                          Assigned
+                        </span>
+                      )}
+                    </div>
+
+                    {item.status === 'assigned' && item.assignedVolunteerName && (
+                      <p className="text-xs text-gray-400 mt-2">
+                        🚑 Assigned to {item.assignedVolunteerName}
+                      </p>
+                    )}
+
+                    <div className="text-xs text-gray-400 mt-2 space-y-1">
+                      <p>Distance: {item.distanceKm.toFixed(1)} km</p>
+                      <p>ETA: {item.etaMinutes.toFixed(0)} mins</p>
+                    </div>
+
+                    <button
+                      onClick={() => handleAcknowledge(item.uid)}
+                      disabled={isYourMission || isAlreadyAssigned || isLoading}
+                      className={`w-full mt-3 py-2 rounded-lg text-xs font-semibold transition ${
+                        isYourMission
+                          ? 'bg-green-900/40 border border-green-700 text-green-300 cursor-not-allowed'
+                          : isAlreadyAssigned
+                            ? 'bg-gray-800 border border-gray-700 text-gray-400 cursor-not-allowed'
+                            : isLoading
+                              ? 'bg-blue-900/40 border border-blue-700 text-blue-300 cursor-wait'
+                              : 'bg-blue-600 hover:bg-blue-500 border border-blue-600 text-white cursor-pointer'
+                      }`}
+                    >
+                      {isLoading ? (
+                        <span className="flex items-center justify-center gap-2">
+                          <Loader2 size={14} className="animate-spin" />
+                          Acknowledging...
+                        </span>
+                      ) : isYourMission ? (
+                        'Mission Active'
+                      ) : isAlreadyAssigned ? (
+                        'Already Assigned'
+                      ) : (
+                        'Acknowledge'
+                      )}
+                    </button>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
 

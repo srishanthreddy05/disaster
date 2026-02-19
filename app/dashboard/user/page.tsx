@@ -1,19 +1,54 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { useAuth } from '@/hooks/useAuth';
 import { UserCircle, AlertCircle, MapPin, Heart, CheckCircle, Loader2, Users } from 'lucide-react';
 import DashboardLayout from '@/app/dashboard/layout-base';
 import { UserLocationMap } from '@/components/UserLocationMap';
-import { ref, set } from 'firebase/database';
+import { ref, set, onValue, off } from 'firebase/database';
 import { database } from '@/lib/firebase';
+
+type UserStatusData = {
+  uid: string;
+  name: string;
+  email: string | null;
+  status: 'safe' | 'need_help' | 'assigned';
+  location: {
+    latitude: number;
+    longitude: number;
+  };
+  timestamp: number;
+  updatedAt: string;
+  assignedVolunteerId?: string;
+  assignedVolunteerName?: string;
+  assignedAt?: string;
+};
 
 export default function UserDashboard() {
   const { user, role } = useAuth();
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [userStatus, setUserStatus] = useState<UserStatusData | null>(null);
+
+  // Realtime listener for user's own status
+  useEffect(() => {
+    if (!user?.uid) {
+      return;
+    }
+
+    const statusRef = ref(database, `user_status/${user.uid}`);
+
+    const listener = onValue(statusRef, (snapshot) => {
+      const data = snapshot.val() as UserStatusData | null;
+      setUserStatus(data);
+    });
+
+    return () => {
+      off(statusRef, 'value', listener);
+    };
+  }, [user?.uid]);
 
   const saveUserStatus = async (status: 'safe' | 'need_help') => {
     if (!user) return;
@@ -126,6 +161,42 @@ export default function UserDashboard() {
               >
                 {message.text}
               </p>
+            </div>
+          )}
+
+          {/* Realtime Status Display */}
+          {userStatus && (
+            <div
+              className={`border rounded-xl p-4 ${
+                userStatus.status === 'safe'
+                  ? 'bg-green-900 border-green-700'
+                  : userStatus.status === 'assigned'
+                    ? 'bg-blue-900 border-blue-700'
+                    : 'bg-yellow-900 border-yellow-700'
+              }`}
+            >
+              <div
+                className={`font-semibold ${
+                  userStatus.status === 'safe'
+                    ? 'text-green-200'
+                    : userStatus.status === 'assigned'
+                      ? 'text-blue-200'
+                      : 'text-yellow-200'
+                }`}
+              >
+                {userStatus.status === 'safe' && '✅ You are marked safe.'}
+                {userStatus.status === 'need_help' && '🆘 Help request sent. Waiting for volunteer...'}
+                {userStatus.status === 'assigned' && (
+                  <div>
+                    <p>🚑 Volunteer {userStatus.assignedVolunteerName || 'Unknown'} is on the way!</p>
+                    {userStatus.assignedAt && (
+                      <p className="text-sm mt-2 opacity-90">
+                        Assigned: {new Date(userStatus.assignedAt).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
