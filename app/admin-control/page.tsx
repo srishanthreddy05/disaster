@@ -532,6 +532,19 @@ export default function AdminControlPage() {
             </Link>
           </section>
 
+          <section className="border border-gray-800 rounded-xl p-4 bg-gray-950/70 space-y-3">
+            <h2 className="text-lg font-medium">Operations Center</h2>
+            <p className="text-xs text-gray-400">
+              Master dashboard with real-time visibility across all nodes.
+            </p>
+            <Link
+              href="/admin-control/operations-center"
+              className="block w-full text-center py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm font-medium"
+            >
+              Open Operations Center
+            </Link>
+          </section>
+
           {/* Volunteer Alerts Section */}
           <section className="border border-gray-800 rounded-xl p-4 bg-gray-950/70">
             <div className="flex items-center justify-between mb-3">
