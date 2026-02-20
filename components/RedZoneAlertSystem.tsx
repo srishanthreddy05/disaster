@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { onValue, ref } from 'firebase/database';
+import { off, onValue, ref } from 'firebase/database';
 import { database } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { AlertTriangle, Volume2, VolumeX } from 'lucide-react';
@@ -60,11 +60,12 @@ export function RedZoneAlertSystem() {
   const [userInRedZone, setUserInRedZone] = useState(false);
   const [debug, setDebug] = useState({ userLocationLoaded: false, zonesLoaded: false });
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [needsAudioUnlock, setNeedsAudioUnlock] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const alertAcknowledgedRef = useRef(false); // Track if alert was acknowledged by user
   const prevZonesRef = useRef<Zone[]>([]);
-  const isMountedRef = useRef(true);
 
   // Mount debug log
   useEffect(() => {
@@ -91,6 +92,40 @@ export function RedZoneAlertSystem() {
     };
   }, []);
 
+  const unlockAudio = useCallback(() => {
+    if (!audioRef.current) return;
+
+    console.log('[RedZone] Attempting to unlock audio...');
+    const audio = audioRef.current;
+    const prevMuted = audio.muted;
+    audio.muted = true;
+
+    audio
+      .play()
+      .then(() => {
+        audio.pause();
+        audio.currentTime = 0;
+        audio.muted = prevMuted;
+        setAudioUnlocked(true);
+        setNeedsAudioUnlock(false);
+        console.log('[RedZone] Audio unlocked successfully');
+      })
+      .catch((err) => {
+        audio.muted = prevMuted;
+        setNeedsAudioUnlock(true);
+        console.error('[RedZone] Audio unlock failed:', err);
+      });
+  }, []);
+
+  useEffect(() => {
+    const handleUserGesture = () => unlockAudio();
+    window.addEventListener('pointerdown', handleUserGesture, { once: true });
+
+    return () => {
+      window.removeEventListener('pointerdown', handleUserGesture);
+    };
+  }, [unlockAudio]);
+
   // Listen to user location
   useEffect(() => {
     if (!user?.uid) {
@@ -101,45 +136,38 @@ export function RedZoneAlertSystem() {
     console.log('[RedZone] Setting up user location listener for UID:', user.uid);
     const userStatusRef = ref(database, `user_status/${user.uid}`);
 
-    const unsubscribe = onValue(
-      userStatusRef,
-      (snapshot) => {
-        console.log('[RedZone] User status listener triggered');
-        const data = snapshot.val() as UserStatus | null;
-        console.log('[RedZone] Raw user status from DB:', data);
+    const handleUserStatus = (snapshot: { val: () => UserStatus | null }) => {
+      console.log('[RedZone] User status listener triggered');
+      const data = snapshot.val() as UserStatus | null;
+      console.log('[RedZone] Raw user status from DB:', data);
 
-        if (!data?.location) {
-          console.log('[RedZone] User location not available in DB');
-          setDebug((prev) => ({ ...prev, userLocationLoaded: false }));
-          return;
-        }
-
-        if (!isMountedRef.current) {
-          console.log('[RedZone] Component unmounted, ignoring location update');
-          return;
-        }
-
-        const location = {
-          latitude: Number(data.location.latitude),
-          longitude: Number(data.location.longitude),
-        };
-
-        console.log('[RedZone] Raw location from DB:', data.location);
-        console.log('[RedZone] Converted location:', location);
-        console.log(`  Latitude: ${location.latitude} (type: ${typeof location.latitude})`);
-        console.log(`  Longitude: ${location.longitude} (type: ${typeof location.longitude})`);
-
-        setUserLocation(location);
-        setDebug((prev) => ({ ...prev, userLocationLoaded: true }));
-      },
-      (error) => {
-        console.error('[RedZone] User status listener ERROR:', error);
+      if (!data?.location) {
+        console.log('[RedZone] User location not available in DB');
+        setDebug((prev) => ({ ...prev, userLocationLoaded: false }));
+        return;
       }
-    );
+
+      const location = {
+        latitude: Number(data.location.latitude),
+        longitude: Number(data.location.longitude),
+      };
+
+      console.log('[RedZone] Raw location from DB:', data.location);
+      console.log('[RedZone] Converted location:', location);
+      console.log(`  Latitude: ${location.latitude} (type: ${typeof location.latitude})`);
+      console.log(`  Longitude: ${location.longitude} (type: ${typeof location.longitude})`);
+
+      setUserLocation(location);
+      setDebug((prev) => ({ ...prev, userLocationLoaded: true }));
+    };
+
+    onValue(userStatusRef, handleUserStatus, (error) => {
+      console.error('[RedZone] User status listener ERROR:', error);
+    });
 
     return () => {
       console.log('[RedZone] Cleaning up user location listener');
-      unsubscribe();
+      off(userStatusRef, 'value', handleUserStatus);
     };
   }, [user?.uid]);
 
@@ -148,81 +176,74 @@ export function RedZoneAlertSystem() {
     console.log('[RedZone] Setting up zones listener...');
     const zonesRef = ref(database, 'zones');
 
-    const unsubscribe = onValue(
-      zonesRef,
-      (snapshot) => {
-        console.log('[RedZone] Zones listener triggered');
-        const data = snapshot.val();
-        console.log('[RedZone] Raw zones data from DB:', data);
+    const handleZones = (snapshot: { val: () => Record<string, any> | null }) => {
+      console.log('[RedZone] Zones listener triggered');
+      const data = snapshot.val();
+      console.log('[RedZone] Raw zones data from DB:', data);
 
-        if (!data) {
-          console.log('[RedZone] Zones data is empty/null');
-          setRedZones([]);
-          setDebug((prev) => ({ ...prev, zonesLoaded: true }));
-          return;
-        }
-
-        if (!isMountedRef.current) {
-          console.log('[RedZone] Component unmounted, ignoring zones update');
-          return;
-        }
-
-        const zones: Zone[] = Object.entries(data).map(([id, zone]: [string, any]) => {
-          console.log(`[RedZone] Processing zone ${id}:`, zone);
-
-          // Convert coordinates object to array
-          let coordArray: Array<{ lat: number; lng: number }> = [];
-
-          if (zone.coordinates) {
-            console.log(`  Coordinates type:`, typeof zone.coordinates, 'IsArray:', Array.isArray(zone.coordinates));
-
-            if (Array.isArray(zone.coordinates)) {
-              // Already an array
-              coordArray = zone.coordinates;
-              console.log(`  Already array: ${coordArray.length} coords`);
-            } else if (typeof zone.coordinates === 'object') {
-              // Object with numeric keys - convert to array
-              coordArray = Object.values(zone.coordinates).map((coord: any) => {
-                const converted = {
-                  lat: Number(coord.lat),
-                  lng: Number(coord.lng),
-                };
-                console.log(`    Raw coord:`, coord, `→ Converted:`, converted);
-                return converted;
-              });
-              console.log(`  Object converted: ${coordArray.length} coords`);
-            }
-          }
-
-          const zoneObj = {
-            id,
-            type: zone.type || 'unknown',
-            coordinates: coordArray,
-            createdAt: zone.createdAt,
-          };
-
-          console.log(`[RedZone] Final zone object:`, zoneObj);
-          console.log(
-            `  Type: "${zoneObj.type}" (isRed=${zoneObj.type === 'red'}), Coords: ${zoneObj.coordinates.length}`
-          );
-
-          return zoneObj;
-        });
-
-        console.log('[RedZone] All zones processed:', zones);
-        console.log(`[RedZone] Total zones: ${zones.length}, Red zones: ${zones.filter((z) => z.type === 'red').length}`);
-        setRedZones(zones);
+      if (!data) {
+        console.log('[RedZone] Zones data is empty/null');
+        setRedZones([]);
         setDebug((prev) => ({ ...prev, zonesLoaded: true }));
-        prevZonesRef.current = zones;
-      },
-      (error) => {
-        console.error('[RedZone] Zones listener ERROR:', error);
+        return;
       }
-    );
+
+      const zones: Zone[] = Object.entries(data).map(([id, zone]: [string, any]) => {
+        console.log(`[RedZone] Processing zone ${id}:`, zone);
+
+        // Convert coordinates object to array
+        let coordArray: Array<{ lat: number; lng: number }> = [];
+
+        if (zone.coordinates) {
+          console.log(`  Coordinates type:`, typeof zone.coordinates, 'IsArray:', Array.isArray(zone.coordinates));
+
+          if (Array.isArray(zone.coordinates)) {
+            // Already an array
+            coordArray = zone.coordinates;
+            console.log(`  Already array: ${coordArray.length} coords`);
+          } else if (typeof zone.coordinates === 'object') {
+            // Object with numeric keys - convert to array
+            coordArray = Object.values(zone.coordinates).map((coord: any) => {
+              const converted = {
+                lat: Number(coord.lat),
+                lng: Number(coord.lng),
+              };
+              console.log(`    Raw coord:`, coord, `→ Converted:`, converted);
+              return converted;
+            });
+            console.log(`  Object converted: ${coordArray.length} coords`);
+          }
+        }
+
+        const zoneObj = {
+          id,
+          type: zone.type || 'unknown',
+          coordinates: coordArray,
+          createdAt: zone.createdAt,
+        };
+
+        console.log(`[RedZone] Final zone object:`, zoneObj);
+        console.log(
+          `  Type: "${zoneObj.type}" (isRed=${zoneObj.type === 'red'}), Coords: ${zoneObj.coordinates.length}`
+        );
+
+        return zoneObj;
+      });
+
+      console.log('[RedZone] All zones processed:', zones);
+      console.log(`[RedZone] Total zones: ${zones.length}, Red zones: ${zones.filter((z) => z.type === 'red').length}`);
+      setRedZones(zones);
+      setDebug((prev) => ({ ...prev, zonesLoaded: true }));
+      prevZonesRef.current = zones;
+    };
+
+    onValue(zonesRef, handleZones, (error) => {
+      console.error('[RedZone] Zones listener ERROR:', error);
+    });
 
     return () => {
       console.log('[RedZone] Cleaning up zones listener');
-      unsubscribe();
+      off(zonesRef, 'value', handleZones);
     };
   }, []);
 
@@ -303,13 +324,13 @@ export function RedZoneAlertSystem() {
     // 1. User is in red zone
     // 2. Alert is not already active
     // 3. Alert was not already acknowledged
-    if (inRedZone && !alertActive && !alertAcknowledgedRef.current && isMountedRef.current) {
+    if (inRedZone && !alertActive && !alertAcknowledgedRef.current) {
       console.log('[RedZone] ✓✓✓ ALARM SHOULD TRIGGER NOW ✓✓✓');
       setAlertActive(true);
 
       // Play alarm with slight delay to ensure DOM is ready
       setTimeout(() => {
-        if (audioRef.current && isMountedRef.current) {
+        if (audioRef.current) {
           console.log('[RedZone] Playing audio alarm...');
           console.log('[RedZone] Audio element:', audioRef.current);
           console.log('[RedZone] Audio loop:', audioRef.current.loop);
@@ -320,6 +341,9 @@ export function RedZoneAlertSystem() {
             console.error('[RedZone] ❌ Alarm play failed:', err);
             console.error('  Error name:', err.name);
             console.error('  Error message:', err.message);
+            if (err?.name === 'NotAllowedError') {
+              setNeedsAudioUnlock(true);
+            }
           });
         }
       }, 100);
@@ -338,6 +362,17 @@ export function RedZoneAlertSystem() {
       console.log('[RedZone] Already in alert state - no change');
     }
   }, [userLocation, redZones, alertActive]);
+
+  useEffect(() => {
+    if (!audioUnlocked || !alertActive || !audioRef.current) return;
+    if (!audioRef.current.paused) return;
+
+    console.log('[RedZone] Audio unlocked - retrying alarm playback');
+    audioRef.current.currentTime = 0;
+    audioRef.current.play().catch((err) => {
+      console.error('[RedZone] Alarm replay failed:', err);
+    });
+  }, [audioUnlocked, alertActive]);
 
   const handleAcknowledge = useCallback(() => {
     console.log('[RedZone] ✓ Acknowledge button clicked');
@@ -360,102 +395,115 @@ export function RedZoneAlertSystem() {
     console.log('[RedZone] Alert state set to false - modal should close');
   }, []);
 
-  useEffect(() => {
-    return () => {
-      isMountedRef.current = false;
-    };
-  }, []);
-
   // Modal should show ONLY when alertActive is true
   if (!alertActive) {
-    // Return collapsible debug panel when not in alert
+    // Return left-side slide-in debug panel when not in alert
     return (
-      <div className="fixed top-0 left-0 right-0 z-50 bg-gray-900 border-b-2 border-yellow-500 overflow-hidden">
-        {/* Toggle Button - Always Visible */}
+      <>
+        {/* Floating Toggle Button */}
         <button
           onClick={() => setDebugPanelOpen(!debugPanelOpen)}
-          className="w-full px-4 py-3 flex items-center justify-between bg-gray-800 hover:bg-gray-700 transition-colors"
+          className="fixed left-2 top-1/2 z-50 -translate-y-1/2 rounded-full bg-gray-900 border border-yellow-500 text-yellow-300 px-3 py-2 shadow-lg hover:bg-gray-800 transition-colors"
+          aria-label="Toggle debug panel"
         >
-          <div className="flex items-center gap-2">
-            <span className="text-yellow-400 font-bold">🔍 RedZoneAlertSystem Debug Panel</span>
-            <span className="text-xs text-yellow-300 bg-gray-700 px-2 py-1 rounded">
-              {debugPanelOpen ? 'Click to collapse' : 'Click to expand'}
-            </span>
-          </div>
-          <span className="text-xl text-yellow-400 transition-transform duration-300" style={{
-            transform: debugPanelOpen ? 'rotate(180deg)' : 'rotate(0deg)'
-          }}>
-            ▼
-          </span>
+          {debugPanelOpen ? '⟨⟨' : '⟩⟩'}
         </button>
 
-        {/* Expandable Content - Smooth Animation */}
+        {/* Slide-in Panel */}
         <div
-          className="overflow-hidden transition-all duration-300 ease-in-out"
-          style={{
-            maxHeight: debugPanelOpen ? '800px' : '0px',
-          }}
+          className={`fixed top-0 left-0 z-50 h-full w-[360px] bg-gray-900 border-r-2 border-yellow-500 shadow-xl transform transition-transform duration-300 ease-in-out ${
+            debugPanelOpen ? 'translate-x-0' : '-translate-x-full'
+          }`}
         >
-          <div className="px-4 py-3 bg-gray-900 space-y-3">
-            {/* Status Grid */}
-            <div className="grid grid-cols-3 gap-4 text-sm text-yellow-200 font-mono">
-              <div>
-                User Location: {debug.userLocationLoaded ? '✓ Loaded' : '✗ Waiting'}
-                {userLocation && (
-                  <div className="text-xs text-yellow-300 ml-4 mt-1">
-                    {userLocation.latitude.toFixed(4)}, {userLocation.longitude.toFixed(4)}
+          <div className="h-full overflow-y-auto">
+            <div className="px-4 py-3 bg-gray-800 border-b border-yellow-600 flex items-center justify-between">
+              <div className="text-yellow-400 font-bold">🔍 Debug Panel</div>
+              <button
+                onClick={() => setDebugPanelOpen(false)}
+                className="text-yellow-300 hover:text-yellow-200"
+                aria-label="Close debug panel"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="px-4 py-3 space-y-3">
+              {needsAudioUnlock && (
+                <div className="flex items-center justify-between gap-3 bg-yellow-900/30 border border-yellow-600 rounded px-3 py-2">
+                  <div className="text-xs text-yellow-200">
+                    Audio is blocked by the browser. Click to enable alarm audio.
                   </div>
-                )}
-              </div>
-              <div>
-                Zones: {debug.zonesLoaded ? '✓ Loaded' : '✗ Waiting'}
-                {redZones.length > 0 && (
+                  <button
+                    onClick={unlockAudio}
+                    className="text-xs font-bold bg-yellow-500 hover:bg-yellow-400 text-black px-3 py-1 rounded"
+                  >
+                    Enable Audio
+                  </button>
+                </div>
+              )}
+
+              {/* Status Grid */}
+              <div className="grid grid-cols-1 gap-3 text-sm text-yellow-200 font-mono">
+                <div>
+                  User Location: {debug.userLocationLoaded ? '✓ Loaded' : '✗ Waiting'}
+                  {userLocation && (
+                    <div className="text-xs text-yellow-300 ml-4 mt-1">
+                      {userLocation.latitude.toFixed(4)}, {userLocation.longitude.toFixed(4)}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  Zones: {debug.zonesLoaded ? '✓ Loaded' : '✗ Waiting'}
+                  {redZones.length > 0 && (
+                    <div className="text-xs text-yellow-300 ml-4 mt-1">
+                      Total: {redZones.length}, Red: {redZones.filter((z) => z.type === 'red').length}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  Status: {userInRedZone ? '🔴 IN RED ZONE' : '✓ Safe'}
                   <div className="text-xs text-yellow-300 ml-4 mt-1">
-                    Total: {redZones.length}, Red: {redZones.filter((z) => z.type === 'red').length}
+                    Alert Active: {alertActive ? '🔊 Yes' : '✓ No'}
                   </div>
-                )}
-              </div>
-              <div>
-                Status: {userInRedZone ? '🔴 IN RED ZONE' : '✓ Safe'}
-                <div className="text-xs text-yellow-300 ml-4 mt-1">
-                  Alert Active: {alertActive ? '🔊 Yes' : '✓ No'}
                 </div>
               </div>
-            </div>
 
-            {/* Info Text */}
-            <div className="text-xs text-yellow-300 border-t border-yellow-600 pt-2">
-              Check browser console (F12) for detailed logs
-            </div>
+              {/* Info Text */}
+              <div className="text-xs text-yellow-300 border-t border-yellow-600 pt-2">
+                Check browser console (F12) for detailed logs
+              </div>
 
-            {/* Red Zones List */}
-            {redZones.filter((z) => z.type === 'red').length > 0 && (
-              <div className="border-t border-yellow-600 pt-2">
-                <div className="text-xs font-bold text-yellow-400 mb-2">Red Zones ({redZones.filter((z) => z.type === 'red').length}):</div>
-                <div className="space-y-2 max-h-64 overflow-y-auto">
-                  {redZones
-                    .filter((z) => z.type === 'red')
-                    .map((zone) => (
-                      <div key={zone.id} className="p-2 bg-red-950 border border-red-700 rounded">
-                        <div className="text-red-400 font-bold text-xs">Zone {zone.id}</div>
-                        <div className="text-xs text-red-300 mt-1">
-                          Polygon: {zone.coordinates.length} vertices
-                          <div className="ml-2 mt-1 space-y-1">
-                            {zone.coordinates.map((coord, i) => (
-                              <div key={i} className="text-red-400">
-                                {i}: {coord.lat.toFixed(4)}, {coord.lng.toFixed(4)}
-                              </div>
-                            ))}
+              {/* Red Zones List */}
+              {redZones.filter((z) => z.type === 'red').length > 0 && (
+                <div className="border-t border-yellow-600 pt-2">
+                  <div className="text-xs font-bold text-yellow-400 mb-2">
+                    Red Zones ({redZones.filter((z) => z.type === 'red').length}):
+                  </div>
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    {redZones
+                      .filter((z) => z.type === 'red')
+                      .map((zone) => (
+                        <div key={zone.id} className="p-2 bg-red-950 border border-red-700 rounded">
+                          <div className="text-red-400 font-bold text-xs">Zone {zone.id}</div>
+                          <div className="text-xs text-red-300 mt-1">
+                            Polygon: {zone.coordinates.length} vertices
+                            <div className="ml-2 mt-1 space-y-1">
+                              {zone.coordinates.map((coord, i) => (
+                                <div key={i} className="text-red-400">
+                                  {i}: {coord.lat.toFixed(4)}, {coord.lng.toFixed(4)}
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      </>
     );
   }
 
