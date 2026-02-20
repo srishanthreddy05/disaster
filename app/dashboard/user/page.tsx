@@ -7,6 +7,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { UserCircle, AlertCircle, MapPin, Heart, CheckCircle, Loader2, Users, Mic, MicOff } from 'lucide-react';
 import DashboardLayout from '@/app/dashboard/layout-base';
 import { UserLocationMap } from '@/components/UserLocationMap';
+import { RedZoneAlertSystem } from '@/components/RedZoneAlertSystem';
 import { ref, set, onValue, off } from 'firebase/database';
 import { database } from '@/lib/firebase';
 
@@ -330,6 +331,8 @@ export default function UserDashboard() {
   return (
     <ProtectedRoute requiredRole="user">
       <DashboardLayout userPage>
+        {/* Red Zone Alert System */}
+        <RedZoneAlertSystem />
         <div className="space-y-8">
           {/* Welcome Card */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-8">
@@ -518,7 +521,7 @@ export default function UserDashboard() {
             </div>
           </div>
         </div>
-        
+
       </DashboardLayout>
     </ProtectedRoute>
   );
