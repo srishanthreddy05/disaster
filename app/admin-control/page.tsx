@@ -9,8 +9,9 @@ import {
   Polygon,
   useJsApiLoader,
 } from '@react-google-maps/api';
-import { getDatabase, onValue, push, ref, set } from 'firebase/database';
+import { getDatabase, onValue, push, ref, set, update } from 'firebase/database';
 import app from '@/lib/firebase';
+import type { VolunteerAlert } from '@/lib/types';
 
 type ZoneType = 'red' | 'orange' | 'green';
 type PointType = 'shelter' | 'safe_location' | 'medical' | 'resource';
@@ -100,6 +101,9 @@ export default function AdminControlPage() {
   const [alertTitle, setAlertTitle] = useState('');
   const [alertMessage, setAlertMessage] = useState('');
   const [alertSeverity, setAlertSeverity] = useState<Severity>('medium');
+
+  const [volunteerAlerts, setVolunteerAlerts] = useState<VolunteerAlert[]>([]);
+  const [acknowledging, setAcknowledging] = useState<string | null>(null);
 
   const [pointModeEnabled, setPointModeEnabled] = useState(false);
   const [pointModalOpen, setPointModalOpen] = useState(false);
@@ -199,6 +203,40 @@ export default function AdminControlPage() {
     };
   }, [db, isAuthenticated]);
 
+  // Listen to volunteer alerts
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
+    const alertsRef = ref(db, 'volunteer_alerts');
+
+    const unsubscribe = onValue(alertsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (!data) {
+        setVolunteerAlerts([]);
+        return;
+      }
+
+      const alerts: VolunteerAlert[] = Object.entries(data).map(([id, alert]: [string, any]) => ({
+        id,
+        ...alert,
+      }));
+
+      // Sort by status (pending first) then by createdAt descending
+      alerts.sort((a, b) => {
+        if (a.status !== b.status) {
+          return a.status === 'pending' ? -1 : 1;
+        }
+        return b.createdAt - a.createdAt;
+      });
+
+      setVolunteerAlerts(alerts);
+    });
+
+    return () => unsubscribe();
+  }, [db, isAuthenticated]);
+
   const handleLogin = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -294,6 +332,25 @@ export default function AdminControlPage() {
     setAlertMessage('');
     setAlertSeverity('medium');
   };
+
+  const handleAcknowledgeVolunteerAlert = async (alertId: string) => {
+    setAcknowledging(alertId);
+    try {
+      const alertRef = ref(db, `volunteer_alerts/${alertId}`);
+      await update(alertRef, {
+        status: 'acknowledged',
+        acknowledgedBy: ADMIN_ID,
+        acknowledgedAt: Date.now(),
+      });
+    } catch (error) {
+      console.error('Error acknowledging alert:', error);
+    } finally {
+      setAcknowledging(null);
+    }
+  };
+
+  const pendingAlerts = volunteerAlerts.filter((a) => a.status === 'pending');
+  const acknowledgedAlerts = volunteerAlerts.filter((a) => a.status === 'acknowledged');
 
   if (!isAuthenticated) {
     return (
@@ -473,6 +530,74 @@ export default function AdminControlPage() {
             >
               Open Verification Portal
             </Link>
+          </section>
+
+          {/* Volunteer Alerts Section */}
+          <section className="border border-gray-800 rounded-xl p-4 bg-gray-950/70">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-medium">Volunteer Alerts</h2>
+              {pendingAlerts.length > 0 && (
+                <span className="bg-yellow-600 text-white text-xs font-bold px-2 py-1 rounded-full">
+                  {pendingAlerts.length}
+                </span>
+              )}
+            </div>
+
+            {volunteerAlerts.length === 0 ? (
+              <p className="text-xs text-gray-400 text-center py-4">No alerts yet</p>
+            ) : (
+              <div className="space-y-3 max-h-[400px] overflow-y-auto">
+                {/* Pending Alerts */}
+                {pendingAlerts.map((alert) => (
+                  <div
+                    key={alert.id}
+                    className="p-3 bg-yellow-900/20 border border-yellow-700 rounded-lg"
+                  >
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-semibold text-yellow-400 mb-1">⏱️ PENDING</p>
+                        <p className="text-sm font-semibold text-gray-100 mb-1 truncate">
+                          {alert.volunteerName}
+                        </p>
+                        <p className="text-xs text-gray-300 line-clamp-2 mb-1">{alert.message}</p>
+                        <p className="text-xs text-gray-500">
+                          {new Date(alert.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleAcknowledgeVolunteerAlert(alert.id)}
+                      disabled={acknowledging === alert.id}
+                      className="w-full mt-2 py-1.5 rounded-lg bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-xs font-semibold transition-colors"
+                    >
+                      {acknowledging === alert.id ? 'Processing...' : '✓ Acknowledge'}
+                    </button>
+                  </div>
+                ))}
+
+                {/* Acknowledged Alerts */}
+                {acknowledgedAlerts.length > 0 && pendingAlerts.length > 0 && (
+                  <div className="border-t border-gray-800 pt-3 mt-3">
+                    <p className="text-xs font-semibold text-gray-500 mb-2">Acknowledged</p>
+                  </div>
+                )}
+                {acknowledgedAlerts.slice(0, 3).map((alert) => (
+                  <div
+                    key={alert.id}
+                    className="p-3 bg-green-900/10 border border-green-800/30 rounded-lg opacity-60"
+                  >
+                    <p className="text-xs font-semibold text-green-400 mb-1">✓ ACKNOWLEDGED</p>
+                    <p className="text-sm font-semibold text-gray-100 mb-1 truncate">
+                      {alert.volunteerName}
+                    </p>
+                    <p className="text-xs text-gray-300 line-clamp-2 mb-1">{alert.message}</p>
+                    <p className="text-xs text-gray-500">
+                      {new Date(alert.createdAt).toLocaleString()}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
         </aside>
 

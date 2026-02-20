@@ -26,3 +26,15 @@ export interface RoleCheckResult {
   role: UserRole;
   isInitialSetup: boolean;
 }
+
+// Volunteer alert structure
+export interface VolunteerAlert {
+  id: string;
+  volunteerId: string;
+  volunteerName: string;
+  message: string;
+  status: 'pending' | 'acknowledged';
+  acknowledgedBy: string | null;
+  acknowledgedAt: number | null;
+  createdAt: number;
+}

@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { useAuth } from '@/hooks/useAuth';
 import {
@@ -9,11 +9,70 @@ import {
   AlertCircle,
   Settings,
   FileText,
+  Bell,
+  CheckCircle,
+  Clock,
 } from 'lucide-react';
 import DashboardLayout from '@/app/dashboard/layout-base';
+import { ref, onValue, update } from 'firebase/database';
+import { database } from '@/lib/firebase';
+import type { VolunteerAlert } from '@/lib/types';
 
 export default function AdminDashboard() {
   const { user, role } = useAuth();
+  const [volunteerAlerts, setVolunteerAlerts] = useState<VolunteerAlert[]>([]);
+  const [acknowledging, setAcknowledging] = useState<string | null>(null);
+
+  // Listen to all volunteer alerts
+  useEffect(() => {
+    const alertsRef = ref(database, 'volunteer_alerts');
+
+    const unsubscribe = onValue(alertsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (!data) {
+        setVolunteerAlerts([]);
+        return;
+      }
+
+      const alerts: VolunteerAlert[] = Object.entries(data).map(([id, alert]: [string, any]) => ({
+        id,
+        ...alert,
+      }));
+
+      // Sort by status (pending first) then by createdAt descending
+      alerts.sort((a, b) => {
+        if (a.status !== b.status) {
+          return a.status === 'pending' ? -1 : 1;
+        }
+        return b.createdAt - a.createdAt;
+      });
+
+      setVolunteerAlerts(alerts);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const handleAcknowledge = async (alertId: string) => {
+    if (!user?.uid) return;
+
+    setAcknowledging(alertId);
+    try {
+      const alertRef = ref(database, `volunteer_alerts/${alertId}`);
+      await update(alertRef, {
+        status: 'acknowledged',
+        acknowledgedBy: user.uid,
+        acknowledgedAt: Date.now(),
+      });
+    } catch (error) {
+      console.error('Error acknowledging alert:', error);
+    } finally {
+      setAcknowledging(null);
+    }
+  };
+
+  const pendingAlerts = volunteerAlerts.filter((a) => a.status === 'pending');
+  const acknowledgedAlerts = volunteerAlerts.filter((a) => a.status === 'acknowledged');
 
   return (
     <ProtectedRoute requiredRole="admin">
@@ -42,6 +101,99 @@ export default function AdminDashboard() {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Volunteer Alerts Section */}
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <Bell className="text-yellow-400" size={24} />
+                <h3 className="text-2xl font-bold">Volunteer Alerts</h3>
+              </div>
+              {pendingAlerts.length > 0 && (
+                <span className="bg-yellow-600 text-white text-xs font-bold px-3 py-1 rounded-full">
+                  {pendingAlerts.length} Pending
+                </span>
+              )}
+            </div>
+
+            {volunteerAlerts.length === 0 ? (
+              <p className="text-gray-400 text-center py-8">No volunteer alerts yet</p>
+            ) : (
+              <div className="space-y-4">
+                {/* Pending Alerts */}
+                {pendingAlerts.map((alert) => (
+                  <div
+                    key={alert.id}
+                    className="p-5 bg-yellow-900/20 border border-yellow-700 rounded-lg"
+                  >
+                    <div className="flex items-start justify-between gap-4 mb-3">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Clock size={16} className="text-yellow-400" />
+                          <span className="text-xs font-semibold text-yellow-400">PENDING</span>
+                        </div>
+                        <p className="font-semibold text-gray-100 mb-1">{alert.volunteerName}</p>
+                        <p className="text-sm text-gray-300 mb-2">{alert.message}</p>
+                        <p className="text-xs text-gray-500">
+                          {new Date(alert.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleAcknowledge(alert.id)}
+                        disabled={acknowledging === alert.id}
+                        className="flex items-center gap-2 bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-semibold px-4 py-2 rounded-lg transition-colors whitespace-nowrap"
+                      >
+                        {acknowledging === alert.id ? (
+                          'Processing...'
+                        ) : (
+                          <>
+                            <CheckCircle size={16} />
+                            Acknowledge
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Acknowledged Alerts */}
+                {acknowledgedAlerts.length > 0 && (
+                  <>
+                    {pendingAlerts.length > 0 && (
+                      <div className="border-t border-gray-800 my-4 pt-4">
+                        <h4 className="text-sm font-semibold text-gray-400 mb-3">Acknowledged</h4>
+                      </div>
+                    )}
+                    {acknowledgedAlerts.map((alert) => (
+                      <div
+                        key={alert.id}
+                        className="p-5 bg-green-900/10 border border-green-800/50 rounded-lg opacity-75"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-2">
+                              <CheckCircle size={16} className="text-green-400" />
+                              <span className="text-xs font-semibold text-green-400">ACKNOWLEDGED</span>
+                            </div>
+                            <p className="font-semibold text-gray-100 mb-1">{alert.volunteerName}</p>
+                            <p className="text-sm text-gray-300 mb-2">{alert.message}</p>
+                            <p className="text-xs text-gray-500">
+                              Submitted: {new Date(alert.createdAt).toLocaleString()}
+                            </p>
+                            {alert.acknowledgedAt && (
+                              <p className="text-xs text-green-500">
+                                Acknowledged: {new Date(alert.acknowledgedAt).toLocaleString()}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {/* System Stats */}
